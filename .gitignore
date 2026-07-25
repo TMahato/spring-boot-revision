@@ -1,0 +1,48 @@
+# ---- Build output ----
+target/
+build/
+out/
+bin/
+*.class
+*.jar
+!**/gradle/wrapper/gradle-wrapper.jar
+*.war
+*.ear
+*.tar
+*.zip
+
+# ---- Gradle ----
+.gradle/
+
+# ---- Maven ----
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# ---- IDE ----
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+nbproject/
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Secrets / local overrides ----
+.env
+*.local.properties
+application-local.properties
+application-secrets.properties
+
+# ---- Local tooling ----
+.claude/settings.local.json

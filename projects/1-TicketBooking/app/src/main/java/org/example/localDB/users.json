@@ -1,0 +1,64 @@
+[
+    {
+        "id": "u1",
+        "name": "alice",
+        "email": "alice@example.com",
+        "password": "alice123",
+        "tickets": [
+            {
+                "ticketId": "t1",
+                "userId": "u1",
+                "source": "bangalore",
+                "destination": "delhi",
+                "dateOfTravel": "2026-08-01",
+                "train": {
+                    "trainId": "bacs",
+                    "trainNo": "12345",
+                    "seats": [
+                        [0,0,0,0,0,0],
+                        [0,0,0,0,0,0],
+                        [0,0,0,0,0,0],
+                        [0,0,0,0,0,0]
+                    ],
+                    "stations": ["bangalore", "jaipur", "delhi"],
+                    "stationTime": {
+                        "bangalore": "13:50:00",
+                        "jaipur": "16:30:00",
+                        "delhi": "21:15:00"
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "id": "u2",
+        "name": "bob",
+        "email": "bob@example.com",
+        "password": "bob123",
+        "tickets": [
+            {
+                "ticketId": "t2",
+                "userId": "u2",
+                "source": "bangalore",
+                "destination": "jaipur",
+                "dateOfTravel": "2026-08-05",
+                "train": {
+                    "trainId": "bacs",
+                    "trainNo": "12345",
+                    "seats": [
+                        [0,0,0,0,0,0],
+                        [0,0,0,0,0,0],
+                        [0,0,0,0,0,0],
+                        [0,0,0,0,0,0]
+                    ],
+                    "stations": ["bangalore", "jaipur", "delhi"],
+                    "stationTime": {
+                        "bangalore": "13:50:00",
+                        "jaipur": "16:30:00",
+                        "delhi": "21:15:00"
+                    }
+                }
+            }
+        ]
+    }
+]
