@@ -168,6 +168,76 @@ b.resize(1.5);
 
 ---
 
+## 3b. Functional Interface
+
+A **functional interface** is an interface with **exactly ONE abstract method** (the SAM — *Single Abstract Method*). Because it has only one method to satisfy, it can be implemented with a **lambda expression** or **method reference** instead of a bulky anonymous class. This is the foundation of functional-style programming in Java 8+.
+
+### Key points
+- Has **exactly one abstract method** (can still have any number of `default`, `static`, and `private` methods — those don't count).
+- Optionally annotated with `@FunctionalInterface` — the compiler then **enforces** the single-abstract-method rule and errors if you add a second.
+- Can be assigned a **lambda** `(args) -> body` or a **method reference** `Class::method`.
+- A method declared from `java.lang.Object` (e.g. `equals`, `hashCode`, `toString`) does **not** count toward the single-method limit.
+- Enables treating **behavior as data** — passing logic as arguments.
+
+### Example — your own functional interface
+```java
+@FunctionalInterface
+interface Calculator {
+    int operate(int a, int b);          // the single abstract method (SAM)
+
+    // default/static methods are allowed and do NOT break "functional"
+    default void log(String op) { System.out.println("op = " + op); }
+}
+
+// Implemented with lambdas — no separate class needed
+Calculator add      = (a, b) -> a + b;
+Calculator multiply = (a, b) -> a * b;
+
+System.out.println(add.operate(3, 4));      // 7
+System.out.println(multiply.operate(3, 4)); // 12
+```
+
+### Same thing WITHOUT a lambda (the verbose old way)
+```java
+Calculator add = new Calculator() {
+    @Override
+    public int operate(int a, int b) { return a + b; }
+};
+```
+> The lambda is just shorthand for this anonymous-class boilerplate.
+
+### Built-in functional interfaces (package `java.util.function`)
+| Interface | Abstract method | Meaning | Example |
+|---|---|---|---|
+| `Runnable` | `void run()` | Task, no input/output | `() -> System.out.println("hi")` |
+| `Supplier<T>` | `T get()` | Supplies a value, no input | `() -> "hello"` |
+| `Consumer<T>` | `void accept(T t)` | Consumes a value, no output | `x -> System.out.println(x)` |
+| `Function<T,R>` | `R apply(T t)` | Maps input → output | `s -> s.length()` |
+| `Predicate<T>` | `boolean test(T t)` | Boolean test | `n -> n > 0` |
+| `BiFunction<T,U,R>` | `R apply(T t, U u)` | Two inputs → output | `(a, b) -> a + b` |
+| `Comparator<T>` | `int compare(T a, T b)` | Ordering | `(a, b) -> a - b` |
+
+### Method reference (even shorter than a lambda)
+```java
+Function<String, Integer> len = String::length;   // same as s -> s.length()
+Consumer<String> print        = System.out::println;
+Supplier<List<String>> maker  = ArrayList::new;    // constructor reference
+```
+
+### Why it matters
+```java
+List<Integer> nums = List.of(5, -3, 8, -1);
+nums.stream()
+    .filter(n -> n > 0)          // Predicate
+    .map(n -> n * n)             // Function
+    .forEach(System.out::println); // Consumer
+```
+Lambdas + functional interfaces power the **Streams API**, event handlers, and callbacks — letting you pass *behavior* as easily as you pass data.
+
+> ⭐ **One-liner:** A functional interface = *one abstract method* → so it can be written as a *lambda*. `@FunctionalInterface` just makes the compiler guard that rule.
+
+---
+
 ## 4. Abstract Class vs Interface — Comparison Table
 
 | Feature | Abstract Class | Interface |
