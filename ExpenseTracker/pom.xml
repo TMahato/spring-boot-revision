@@ -74,6 +74,12 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- Kafka: async event publishing/consuming (KafkaTemplate, @KafkaListener) -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+
         <!-- ModelMapper: entity <-> DTO mapping -->
         <dependency>
             <groupId>org.modelmapper</groupId>
@@ -98,6 +104,12 @@
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Kafka test helpers (@EmbeddedKafka — run a broker in-process for tests) -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka-test</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

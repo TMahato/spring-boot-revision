@@ -33,11 +33,10 @@ public class SecurityConfig {
     private final UserDetailsServiceImpl userDetailsServiceImpl;
 
 
-    @Bean
-    @Autowired
-    public UserDetailsService userDetailsService(UserRepository userRepository, PasswordEncoder passwordEncoder) {
-        return new UserDetailsServiceImpl(userRepository, passwordEncoder);
-    }
+    // No @Bean UserDetailsService here on purpose: UserDetailsServiceImpl is already
+    // a @Component, so the container builds it (with all its dependencies) itself.
+    // Hand-rolling `new UserDetailsServiceImpl(...)` created a SECOND, unmanaged
+    // instance and broke every time the constructor gained a parameter.
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http, JwtAuthFilter jwtAuthFilter) throws Exception {
