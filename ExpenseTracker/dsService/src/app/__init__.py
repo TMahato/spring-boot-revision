@@ -14,6 +14,8 @@ the same, and notes/chapter-6 covers them in depth.
 import atexit
 import json
 import logging
+import uuid
+from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request
 from kafka import KafkaProducer
@@ -70,6 +72,15 @@ def handle_message():
 
     payload = result.serialize()
     payload["user_id"] = user_id
+    # event_id is what makes the consumer idempotent. Kafka is at-least-once —
+    # our own retries, or a consumer rebalance between processing and offset
+    # commit, can deliver the same event twice. expenseService stores this under
+    # a UNIQUE constraint and skips anything it has already seen
+    # (notes/chapter-6 §4.4). Without it a redelivery is a duplicate expense.
+    payload["event_id"] = str(uuid.uuid4())
+    # Timezone-aware ISO-8601, which is what the Java consumer's JavaTimeModule
+    # expects. A naive timestamp would be read as UTC regardless of where this ran.
+    payload["created_at"] = datetime.now(timezone.utc).isoformat()
 
     try:
         # KEY = user_id. Kafka only guarantees ordering WITHIN a partition, and

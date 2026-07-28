@@ -1,0 +1,28 @@
+# Keep the build context small and the cache stable. See notes/chapter-7 §4.
+
+target/
+build/
+*.class
+
+# IDE / editor
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# VCS
+.git/
+.gitignore
+
+# Secrets and local overrides
+.env
+application-local.properties
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs
+*.md

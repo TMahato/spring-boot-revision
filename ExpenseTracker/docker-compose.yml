@@ -214,6 +214,44 @@ services:
     networks:
       - expense-net
 
+  # ---------------------------------------------------------------------------
+  # expenseService — consumes expense-topic (produced by dsService) and persists.
+  # Also serves the read/write REST API for expenses.
+  # ---------------------------------------------------------------------------
+  expenseservice:
+    build:
+      context: ./expenseService
+      dockerfile: Dockerfile
+    image: expense-tracker/expenseservice:latest
+    container_name: et-expenseservice
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DB: ${MYSQL_EXPENSE_DB:-expenseservice}
+      MYSQL_USER: ${MYSQL_USER:-appuser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-AppPass123}
+      JPA_DDL_AUTO: ${JPA_DDL_AUTO:-update}
+      KAFKA_HOST: kafka
+      KAFKA_PORT: 9092
+      # MUST match dsService's KAFKA_TOPIC — same variable, so they cannot drift.
+      KAFKA_TOPIC: ${EXPENSE_TOPIC:-expense-topic}
+    ports:
+      - "9820:9820"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9820/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - expense-net
+
   # ===========================================================================
   # API GATEWAY
   # ===========================================================================
@@ -252,6 +290,8 @@ services:
       userservice:
         condition: service_healthy
       dsservice:
+        condition: service_healthy
+      expenseservice:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "kong", "health"]

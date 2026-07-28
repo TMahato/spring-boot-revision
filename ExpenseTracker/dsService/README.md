@@ -27,10 +27,12 @@ call, so cheap rejection first.
 | Header | `x-user-id: <uuid>` — **required**, 400 without it |
 | Body | `{"message": "Rs 450 spent on your HDFC card at STARBUCKS"}` |
 
-**200** — extracted, and published to Kafka:
+**200** — extracted, and published to Kafka (the response is the published
+payload):
 
 ```json
-{"amount": "450", "merchant": "STARBUCKS", "currency": "INR", "user_id": "…"}
+{"amount": "450", "merchant": "STARBUCKS", "currency": "INR",
+ "user_id": "…", "event_id": "…", "created_at": "2026-07-28T11:35:02.481Z"}
 ```
 
 **400** — missing `x-user-id`, malformed body, not a bank SMS, or extraction
@@ -55,18 +57,24 @@ nulls rather than an error.
 
 ```json
 {
-  "amount":   "450",
-  "merchant": "STARBUCKS",
-  "currency": "INR",
-  "user_id":  "3f1c…"
+  "amount":     "450",
+  "merchant":   "STARBUCKS",
+  "currency":   "INR",
+  "user_id":    "3f1c…",
+  "event_id":   "9b2e…",
+  "created_at": "2026-07-28T11:35:02.481Z"
 }
 ```
 
 Notes for whoever writes the consumer:
 
-- **All four fields are nullable except `user_id`.** The LLM is instructed to
-  return null for anything it can't determine, so `amount` and `merchant` can
-  legitimately arrive as `null`. Don't map them to primitives.
+- **`event_id` is a fresh UUID per published event.** Store it under a unique
+  constraint and skip events you've already seen — that is what makes the
+  consumer idempotent against at-least-once delivery (notes/chapter-6 §4.4).
+  `expenseService` does exactly this.
+- **`amount`, `merchant` and `currency` are all nullable.** The LLM is
+  instructed to return null for anything it can't determine. Don't map them to
+  primitives.
 - **`amount` is a string, not a number.** It comes out of the model as text.
   Parse and validate it on the consumer side; don't assume it's well-formed.
 - The key is the `user_id`, so all of one user's expenses land in the same

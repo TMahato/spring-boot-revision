@@ -24,7 +24,15 @@ public class UserInfoProducer {
     }
 
     public void sendEventToKafka(UserInfoDto userInfoDto) {
-        Message<UserInfoDto> message = MessageBuilder.withPayload(userInfoDto).setHeader(KafkaHeaders.TOPIC, TOPIC_NAME).build();
+        // KEY = userId. Kafka only guarantees ordering WITHIN a partition, and the
+        // partition is chosen by key — so keying on the user id is what makes two
+        // events for the same user arrive in the order they were sent. Unkeyed,
+        // they can land in different partitions and be processed out of order.
+        // See notes/chapter-6 §7.4.
+        Message<UserInfoDto> message = MessageBuilder.withPayload(userInfoDto)
+                .setHeader(KafkaHeaders.TOPIC, TOPIC_NAME)
+                .setHeader(KafkaHeaders.KEY, userInfoDto.getUserId())
+                .build();
 
         kafkaTemplate.send(message);
     }

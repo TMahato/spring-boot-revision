@@ -55,6 +55,19 @@ public class UserDetailsServiceImpl implements UserDetailsService
         return userRepository.findByUsername(userInfoDto.getUsername());
     }
 
+    /**
+     * Resolve a username to its userId — the id every other service keys on
+     * (it travels in the Kafka event and is the primary key in userService and
+     * expenseService).
+     *
+     * @return the userId, or null if no such user. Null rather than an exception
+     *         because the caller (/auth/v1/ping) turns a miss into a 401, not a 500.
+     */
+    public String getUserByUsername(String username){
+        UserInfo user = userRepository.findByUsername(username);
+        return Objects.nonNull(user) ? user.getUserId() : null;
+    }
+
     public Boolean signupUser(UserInfoDto userInfoDto){
         //        ValidationUtil.validateUserAttributes(userInfoDto);
         userInfoDto.setPassword(passwordEncoder.encode(userInfoDto.getPassword()));
@@ -63,6 +76,10 @@ public class UserDetailsServiceImpl implements UserDetailsService
         }
         String userId = UUID.randomUUID().toString();
         userRepository.save(new UserInfo(userId, userInfoDto.getUsername(), userInfoDto.getPassword(), new HashSet<>()));
+        // Carry the generated id onto the DTO BEFORE publishing. Without this the
+        // event goes out with user_id=null, and the consumer — which upserts on
+        // that id — can neither match nor insert. See notes/chapter-6 §7.2.
+        userInfoDto.setUserId(userId);
         // pushEventToQueue
         userInfoProducer.sendEventToKafka(userInfoDto);
         return true;

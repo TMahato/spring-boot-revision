@@ -2,10 +2,11 @@
 -- MySQL initialization. See notes/chapter-7 §8.1.
 --
 -- The image's own env vars (MYSQL_DATABASE / MYSQL_USER / MYSQL_PASSWORD) create
--- exactly one database and one user. We need TWO databases on this server:
+-- exactly one database and one user. We need THREE databases on this server:
 --
---     userservice   <- created by MYSQL_DATABASE, owned by userService
---     authservice   <- created here, owned by authService
+--     userservice     <- created by MYSQL_DATABASE, owned by userService
+--     authservice     <- created here, owned by authService
+--     expenseservice  <- created here, owned by expenseService
 --
 -- Each service reads and writes only its own schema, so this is still
 -- database-per-service — it just avoids running a second MySQL container in
@@ -23,10 +24,15 @@ CREATE DATABASE IF NOT EXISTS authservice
     CHARACTER SET utf8mb4
     COLLATE utf8mb4_unicode_ci;
 
+CREATE DATABASE IF NOT EXISTS expenseservice
+    CHARACTER SET utf8mb4
+    COLLATE utf8mb4_unicode_ci;
+
 -- NOTE: 'appuser' is hardcoded because a .sql file cannot read ${MYSQL_USER}.
 -- If you change MYSQL_USER in .env, change it here too (and `down -v`).
 -- '%' rather than 'localhost': the app connects from another container, so from
 -- MySQL's point of view it is a remote host.
 GRANT ALL PRIVILEGES ON authservice.* TO 'appuser'@'%';
+GRANT ALL PRIVILEGES ON expenseservice.* TO 'appuser'@'%';
 
 FLUSH PRIVILEGES;

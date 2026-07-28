@@ -437,13 +437,21 @@ Two things to fix in your mental model from this diagram:
 
 ---
 
-## 7. What actually goes on the wire today
+## 7. What went on the wire — four defects, now fixed
+
+> **Status: all four are fixed.** This section is kept because the *way* they
+> failed is the lesson: every one of them was silent. Nothing threw, no log line
+> appeared, and the consumer happily read nulls forever. That is what a JSON
+> contract with no schema registry buys you.
+>
+> `UserInfoSerializerTest` now pins the payload down so they cannot come back.
 
 The DTOs above describe an event carrying `user_id`, `first_name`, `last_name`,
-`phone_number`, `email`, `profile_pic`. That is **not** what this code publishes.
-Verified against the compiled classes in `authService/target/classes`.
+`phone_number`, `email`, `profile_pic`. For a long time that was **not** what
+this code published. Verified against the compiled classes in
+`authService/target/classes`.
 
-### 7.1 The auth DTO has no getters, so four fields never serialize
+### 7.1 The auth DTO had no getters, so four fields never serialized
 
 ```java
 @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
@@ -483,9 +491,10 @@ The same gap breaks the *input* side: with no setters and no
 from the signup request body either. They are dead fields end to end — always
 null, never sent.
 
-**Fix:** add `@Getter @Setter` (or `@Data`) to the auth service's `UserInfoDto`.
+**Fixed:** `@Getter @Setter` added to the auth service's `UserInfoDto`, with a
+comment explaining why they are load-bearing rather than boilerplate.
 
-### 7.2 `user_id` is always null in the event
+### 7.2 `user_id` was always null in the event
 
 `UserDetailsServiceImpl.signupUser` generates the UUID and passes it to the
 *entity*, but never sets it on the *DTO* that gets published:
@@ -504,22 +513,38 @@ Downstream this is worse than a missing field: `createOrUpdateUser` calls
 `findByUserId(null)`, misses, and tries to `save()` a `UserInfo` whose `@Id` is
 null — and that id is `@NonNull`.
 
-**Fix:** `userInfoDto.setUserId(userId);` before the `sendEventToKafka` call.
+**Fixed:** `userInfoDto.setUserId(userId);` now runs before the
+`sendEventToKafka` call.
 
-### 7.3 The actual payload
+### 7.3 The payload, before and after
 
-Putting §7.1 and §7.2 together, a signup today publishes:
+Putting §7.1 and §7.2 together, a signup used to publish:
 
 ```json
 {"user_id":null,"username":"jassi","user_roles":[]}
 ```
 
-The consumer parses that happily — `ignoreUnknown` discards `username` and
-`user_roles`, and every mapped field is null. No exception anywhere. **A schema
+The consumer parsed that happily — `ignoreUnknown` discarded `username` and
+`user_roles`, and every mapped field was null. No exception anywhere. **A schema
 mismatch on a JSON contract fails silently by design**, which is precisely why
 this is worth a section rather than a footnote.
 
-### 7.4 No message key is ever set
+With both fixes in, the same signup now publishes (dumped from the real
+`UserInfoSerializer`):
+
+```json
+{"user_id":"3f1c-9b2e-uuid","username":"jassi","user_roles":[],
+ "first_name":"Jaswinder","last_name":"Singh",
+ "phone_number":9876543210,"email":"jassi@example.com"}
+```
+
+Note `password` is still absent — the `WRITE_ONLY` annotation from §5.3 keeps
+doing its job now that the surrounding fields actually serialize.
+`profile_pic` is absent too, and legitimately so: the consumer declares it, the
+auth service has no such field, and `ignoreUnknown` means the consumer simply
+reads null.
+
+### 7.4 No message key was ever set
 
 `application.properties:24-25` says:
 
@@ -534,9 +559,10 @@ partitions, so **two events for the same user can land in different partitions
 and be processed out of order**. Kafka only guarantees ordering *within* a
 partition. The comment describes an intent the code does not implement.
 
-**Fix:** `.setHeader(KafkaHeaders.KEY, userInfoDto.getUserId())`. On a
-multi-partition topic this is the difference between correct and
-occasionally-corrupt state.
+**Fixed:** `.setHeader(KafkaHeaders.KEY, userInfoDto.getUserId())` is now set on
+the message. On a multi-partition topic this is the difference between correct
+and occasionally-corrupt state. dsService's producer does the same thing with
+`user_id`.
 
 ### 7.5 The DTO extends the persistence entity
 
@@ -651,9 +677,10 @@ publishing to shared topics, it is not.
   producer-supplied id; never `@GeneratedValue` on an id that arrives in an event.
 - Ordering is **per partition**, and partition is chosen by **key**. No key = no
   ordering guarantee.
-- Open defects in this codebase: no getters on the auth DTO (§7.1), `user_id`
-  never set before publish (§7.2), no message key (§7.4), DTO extends the
-  persistence entity (§7.5).
+- Fixed defects worth remembering, all of which failed **silently** (§7): no
+  getters on the auth DTO (§7.1), `user_id` never set before publish (§7.2), no
+  message key (§7.4). `UserInfoSerializerTest` now guards the payload.
+- Still open: the auth DTO extends the persistence entity (§7.5).
 
 ---
 
