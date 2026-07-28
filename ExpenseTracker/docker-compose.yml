@@ -123,11 +123,8 @@ services:
       JPA_DDL_AUTO: ${JPA_DDL_AUTO:-update}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       JWT_SECRET: ${JWT_SECRET:-change-me-to-a-long-random-256-bit-secret-value}
-    ports:
-      # Published only so you can compare direct vs through-the-gateway while
-      # learning. In a real deployment you delete this block and Kong becomes
-      # the only way in.
-      - "8080:8080"
+    # NO `ports:` — see the note at the bottom of this file. Reachable only from
+    # inside expense-net, i.e. only through Kong.
     depends_on:
       # The long form. `depends_on: [mysql]` alone waits for the CONTAINER to
       # start, not for MySQL to be READY — see notes/chapter-7 §7.1.
@@ -165,8 +162,7 @@ services:
       # `update`, not `create` — `create` drops the schema on every restart,
       # which makes the mysql-data volume pointless (notes/chapter-7 §7.4).
       JPA_DDL_AUTO: ${JPA_DDL_AUTO:-update}
-    ports:
-      - "9810:9810"
+    # NO `ports:` — reachable only through Kong.
     depends_on:
       mysql:
         condition: service_healthy
@@ -200,8 +196,7 @@ services:
       # a silent fallback would fail later with an opaque 401 from Mistral.
       MISTRAL_API_KEY: ${MISTRAL_API_KEY}
       MISTRAL_MODEL: ${MISTRAL_MODEL:-mistral-large-latest}
-    ports:
-      - "8010:8010"
+    # NO `ports:` — reachable only through Kong.
     depends_on:
       kafka:
         condition: service_healthy
@@ -236,8 +231,7 @@ services:
       KAFKA_PORT: 9092
       # MUST match dsService's KAFKA_TOPIC — same variable, so they cannot drift.
       KAFKA_TOPIC: ${EXPENSE_TOPIC:-expense-topic}
-    ports:
-      - "9820:9820"
+    # NO `ports:` — reachable only through Kong.
     depends_on:
       mysql:
         condition: service_healthy
@@ -279,11 +273,26 @@ services:
       KONG_ADMIN_ACCESS_LOG: /dev/stdout
       KONG_PROXY_ERROR_LOG: /dev/stderr
       KONG_ADMIN_ERROR_LOG: /dev/stderr
+
+      # --- custom forward-auth plugin -----------------------------------------
+      # Kong resolves a plugin named `x` by requiring `kong.plugins.x.handler`,
+      # so the package path must be the directory ABOVE the `kong/` folder. The
+      # volume below lands our code at /opt/custom/kong/plugins/forward-auth/,
+      # hence /opt/custom/?.lua here. The trailing `;;` keeps Kong's own
+      # defaults — drop it and the gateway will not start.
+      KONG_LUA_PACKAGE_PATH: /opt/custom/?.lua;;
+      # `bundled` must stay, or every built-in plugin (rate-limiting,
+      # correlation-id, …) disappears and kong.yml fails validation.
+      KONG_PLUGINS: bundled,forward-auth
     ports:
       - "8000:8000"   # proxy — ALL API traffic goes here
       - "8001:8001"   # admin API (read-only in DB-less mode)
     volumes:
       - ./infra/kong:/kong/declarative:ro
+      # Custom plugin source. Mounted so an edit is a `docker compose restart
+      # kong` away rather than an image rebuild. Note the target path shape:
+      # it must end in kong/plugins/<name> for KONG_LUA_PACKAGE_PATH to resolve.
+      - ./infra/kong/plugins:/opt/custom/kong/plugins:ro
     depends_on:
       authservice:
         condition: service_healthy
@@ -317,3 +326,26 @@ networks:
 volumes:
   mysql-data:
   kafka-data:
+
+# =============================================================================
+# WHY THE APP SERVICES HAVE NO `ports:`
+#
+# Kong's forward-auth is the only thing establishing identity, and it does so by
+# injecting a trusted X-User-Id header. Any service reachable directly from the
+# host could be handed a forged X-User-Id and would believe it — bypassing
+# authentication entirely. Not publishing them is therefore not a nicety, it is
+# half of the security model (the other half is the clear_header call in
+# infra/kong/kong.yml).
+#
+# So: everything enters through Kong on :8000.
+#
+# To debug a service directly, do it from inside the network rather than
+# reopening the hole:
+#     docker compose exec kong curl -s http://expenseservice:9820/actuator/health
+#     docker compose logs -f expenseservice
+#
+# mysql and kafka ARE still published, deliberately — they hold no identity
+# logic and being able to point a DB client or a console consumer at them is
+# worth a lot while learning. Drop those `ports:` blocks too for anything
+# resembling production.
+# =============================================================================

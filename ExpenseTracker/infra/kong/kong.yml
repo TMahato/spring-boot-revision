@@ -5,19 +5,25 @@
 # no Postgres and no migration step — this file IS the gateway's configuration,
 # version controlled like any other source file. The Admin API on :8001 is
 # read-only in this mode; to change routing, edit here and restart Kong.
+#
+# Authentication is handled by the custom `forward-auth` plugin, applied
+# GLOBALLY at the bottom of this file. Its code lives in
+# infra/kong/plugins/forward-auth/ — see that handler for how it works.
 # =============================================================================
 _format_version: "3.0"
 _transform: true
 
 services:
   # ---------------------------------------------------------------------------
-  # authService. The URL uses the compose SERVICE NAME, not localhost and not an
-  # IP: container IPs change on every recreate, and localhost inside the Kong
-  # container is Kong itself (§5).
+  # authService.
+  #
+  # forward-auth applies here too (it is global), but its `public_paths` list
+  # exempts /auth/v1/login, /signup, /refreshToken and /ping — respectively
+  # because you cannot require a token to obtain one, and because /ping is the
+  # plugin's own upstream. This service protects itself via Spring Security.
   # ---------------------------------------------------------------------------
   - name: auth-service
     url: http://authservice:8080
-    # Fail fast rather than hanging a client for a minute.
     connect_timeout: 5000
     read_timeout: 60000
     write_timeout: 60000
@@ -31,35 +37,7 @@ services:
         # @PostMapping("auth/v1/signup") — the FULL path — so stripping produces
         # a 404 at the service while Kong reports a successful proxy.
         strip_path: false
-        methods:
-          - GET
-          - POST
-          - PUT
-          - DELETE
-          - OPTIONS
-
-  # ---------------------------------------------------------------------------
-  # userService.
-  # ---------------------------------------------------------------------------
-  - name: user-service
-    url: http://userservice:9810
-    connect_timeout: 5000
-    read_timeout: 60000
-    write_timeout: 60000
-    retries: 3
-    routes:
-      - name: user-routes
-        paths:
-          - /user/v1
-        # Same reasoning: UserController maps /user/v1/getUser and
-        # /user/v1/createUpdate at the full path.
-        strip_path: false
-        methods:
-          - GET
-          - POST
-          - PUT
-          - DELETE
-          - OPTIONS
+        methods: [GET, POST, PUT, DELETE, OPTIONS]
 
   # ---------------------------------------------------------------------------
   # expenseService.
@@ -76,12 +54,23 @@ services:
           - /expense/v1
         # ExpenseController is @RequestMapping("/expense/v1"), the full path.
         strip_path: false
-        methods:
-          - GET
-          - POST
-          - PUT
-          - DELETE
-          - OPTIONS
+        methods: [GET, POST, PUT, DELETE, OPTIONS]
+
+  # ---------------------------------------------------------------------------
+  # userService.
+  # ---------------------------------------------------------------------------
+  - name: user-service
+    url: http://userservice:9810
+    connect_timeout: 5000
+    read_timeout: 60000
+    write_timeout: 60000
+    retries: 3
+    routes:
+      - name: user-routes
+        paths:
+          - /user/v1
+        strip_path: false
+        methods: [GET, POST, PUT, DELETE, OPTIONS]
 
   # ---------------------------------------------------------------------------
   # dsService (Python/Flask). Note the different path prefix shape: /v1/ds
@@ -91,8 +80,8 @@ services:
     url: http://dsservice:8010
     connect_timeout: 5000
     # Long read timeout on purpose: this endpoint waits on an LLM call, which
-    # can take several seconds. The default 60s is fine, but it is the one route
-    # here where the timeout is load-bearing rather than incidental.
+    # can take several seconds. It is the one route here where the timeout is
+    # load-bearing rather than incidental.
     read_timeout: 120000
     write_timeout: 60000
     # retries: 0 — a retry would re-run the LLM extraction AND republish to
@@ -104,19 +93,42 @@ services:
         paths:
           - /v1/ds
         strip_path: false
-        methods:
-          - GET
-          - POST
-          - OPTIONS
+        methods: [GET, POST, OPTIONS]
 
 # -----------------------------------------------------------------------------
 # Global plugins — the "cross-cutting concerns in one place" argument for having
-# a gateway at all (§9). Configured once here instead of in both services.
+# a gateway at all (§9). Configured once here instead of in every service.
+# Order at runtime is by plugin PRIORITY, not by position in this list.
 # -----------------------------------------------------------------------------
 plugins:
+
+  # Authentication for every route. Calls authService's /auth/v1/ping, and
+  # injects the resolved userId as X-User-Id for the upstream service.
+  #
+  # PRIORITY 800 puts it AFTER rate-limiting (901), so a flood of anonymous
+  # requests is throttled before it can be amplified into a flood of pings at
+  # the auth service.
+  #
+  # Code: infra/kong/plugins/forward-auth/{handler,schema}.lua
+  - name: forward-auth
+    config:
+      auth_endpoint: http://authservice:8080/auth/v1/ping
+      upstream_header: X-User-Id
+      timeout: 5000
+      # Endpoints that must NOT require a token. Removing /auth/v1/ping from
+      # this list makes every request recurse into itself.
+      public_paths:
+        - /auth/v1/login
+        - /auth/v1/signup
+        - /auth/v1/refreshToken
+        - /auth/v1/ping
+      # 0 = ask authService on every request. Raise it (e.g. 30) to trade
+      # immediate revocation for fewer round trips.
+      cache_ttl: 0
+
   # Stamps X-Request-ID on every request (generating one if the client didn't
   # send it) and echoes it back on the response. This is what lets you follow a
-  # single request across Kong -> authService -> Kafka -> userService.
+  # single request across Kong -> dsService -> Kafka -> expenseService.
   - name: correlation-id
     config:
       header_name: X-Request-ID
@@ -137,11 +149,3 @@ plugins:
     config:
       allowed_payload_size: 10
       size_unit: megabytes
-
-# -----------------------------------------------------------------------------
-# NOT configured, deliberately (§10.5): the `jwt` plugin, which would validate
-# the auth service's HS256 tokens at the gateway and reject unauthenticated
-# traffic before it reaches any service. It needs the signing secret registered
-# against a Kong Consumer, and app.jwt.secret is still commented out in
-# authService's application.properties. That is the natural next step.
-# -----------------------------------------------------------------------------

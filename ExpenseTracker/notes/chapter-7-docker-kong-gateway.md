@@ -531,15 +531,121 @@ the default and every request 404s at the service while Kong reports success.
   `local` (counters in each node's memory); the `cluster` policy needs a
   database, and `redis` needs a Redis.
 
-### 10.5 What is deliberately *not* here
+### 10.5 Forward auth — authenticating at the edge
 
-Kong has a `jwt` plugin that could validate the auth service's tokens at the
-gateway, rejecting unauthenticated traffic before it ever reaches a service. It
-is not enabled, because it needs the HS256 signing secret registered against a
-Kong Consumer, and this project currently has that secret commented out in
-`application.properties` (see the auth service config, and Chapter 4). Wiring
-that up is the natural next step: it would let the user service stop being
-implicitly trusted just because it sits on an internal network.
+Every request to a protected service is authenticated by Kong before it is
+proxied. Kong does not validate the token itself; it asks the auth service.
+
+```
+  client ──Authorization: Bearer <jwt>──► kong
+                                           │
+                                           │ 1. GET /auth/v1/ping
+                                           │    (forwarding the client's token)
+                                           ▼
+                                      authService ──► 200 + userId
+                                           │             or 401
+                                           ▼
+                                      kong sets X-User-Id: <userId>
+                                           │
+                                           ▼
+                            expenseService / userService / dsService
+```
+
+The downstream services never see the token and validate nothing — they read
+`X-User-Id` and trust it. That trust rests on exactly two things:
+
+1. **The plugin clears any client-supplied `X-User-Id` before setting its own.**
+   Without that line, a caller just sends the header themselves and becomes
+   whoever they like. This is the single most important line in the file.
+2. **The services are not published to the host.** A service reachable directly
+   from your laptop can be handed a forged `X-User-Id` and will believe it,
+   which bypasses the gateway entirely.
+
+Break either and the scheme is worthless. They are two halves of one mechanism,
+which is why the compose file carries a comment saying so.
+
+#### A custom plugin, not inline Lua
+
+Kong OSS has no built-in forward-auth plugin. The first cut of this used
+`pre-function` (the bundled Serverless Functions plugin) with the Lua pasted
+inline in `kong.yml` — which meant the same forty lines copied into three
+services, in YAML, where nothing can lint it.
+
+It is now a proper custom plugin instead:
+
+```
+infra/kong/plugins/forward-auth/
+├── handler.lua     the logic — one copy, in a real .lua file
+└── schema.lua      config fields, validated by Kong at boot
+```
+
+That buys three things: one copy instead of three, config that is **validated at
+startup** (a typo in `kong.yml` is a boot failure with a message, not a nil
+dereference on the first request), and no Lua sandbox to fight — custom plugins
+are not sandboxed, so `require "resty.http"` just works.
+
+Kong resolves a plugin named `x` by requiring `kong.plugins.x.handler`, so two
+settings are needed:
+
+```yaml
+KONG_LUA_PACKAGE_PATH: /opt/custom/?.lua;;      # dir ABOVE kong/
+KONG_PLUGINS: bundled,forward-auth
+```
+
+with the source mounted at `/opt/custom/kong/plugins/forward-auth/`. Two things
+that will bite: dropping the trailing `;;` discards Kong's own package path and
+the gateway won't start, and dropping `bundled` from `KONG_PLUGINS` makes every
+built-in plugin vanish so `kong.yml` fails validation.
+
+#### Applied globally, with an exemption list
+
+The plugin is **global** — it runs on every request, including to the auth
+service. What keeps that from deadlocking is `public_paths`:
+
+| Exempt path | Why |
+|---|---|
+| `/auth/v1/login`, `/auth/v1/signup`, `/auth/v1/refreshToken` | How you *obtain* a token. Requiring one to get one is a deadlock. |
+| `/auth/v1/ping` | The plugin's own upstream. Protect it and every request recurses into itself until Kong runs out of sockets. |
+
+Those endpoints are not left unguarded — Spring Security still authenticates
+`/ping` and anything not on its own `permitAll` list. The exemption only removes
+*Kong's* check.
+
+Global-with-exemptions beats attaching the plugin to three services individually:
+a new service is protected the moment it is routed, rather than protected only if
+someone remembers to attach the plugin.
+
+#### Priority
+
+`PRIORITY = 800` puts forward-auth **below** rate-limiting (901), so requests are
+throttled *before* they are authenticated. That ordering is deliberate: above it,
+a flood of anonymous requests would each fire a ping at the auth service before
+being rejected — turning the gateway into an amplifier aimed at the one service
+everything else depends on.
+
+#### 401 vs 503
+
+The plugin distinguishes "your token is bad" from "the auth service is down":
+
+| Condition | Response |
+|---|---|
+| No `Authorization` header | 401 |
+| ping returns non-200 | 401 |
+| ping unreachable / times out | **503** |
+
+Collapsing the last case into 401 would send every client off to re-authenticate
+during an outage — a stampede against the service that is already struggling.
+
+#### The cost
+
+This adds an HTTP round trip to **every** request, and makes the auth service a
+hard dependency of all traffic. Two obvious next steps: cache the token→userId
+mapping in `kong.cache` with a short TTL (a token's meaning does not change
+second to second), or switch to Kong's `jwt` plugin, which validates the
+signature locally with no network call at all. `jwt` needs the HS256 secret
+registered against a Kong Consumer, and `app.jwt.secret` is still commented out
+in the auth service's `application.properties` — so ping-based forward auth is
+what works today, and it has the advantage of honouring revocation immediately.
 
 ---
 
@@ -582,6 +688,13 @@ Symptom → cause:
 | Container stuck `starting` forever | Healthcheck binary missing from the image (§7.2) |
 | Kong returns 404 from the service | `strip_path` (§10.3) |
 | Kong `no Route matched` | Path prefix doesn't match any route |
+| Kong won't start, `plugin 'forward-auth' not enabled` | `forward-auth` missing from `KONG_PLUGINS` (§10.5) |
+| Kong won't start, `module 'kong.plugins.forward-auth.handler' not found` | `KONG_LUA_PACKAGE_PATH` wrong, or the volume isn't landing at `…/kong/plugins/forward-auth/` |
+| Kong won't start, every built-in plugin unknown | `bundled` dropped from `KONG_PLUGINS` (§10.5) |
+| Everything 401s including with a fresh token | ping unreachable from Kong — check `docker compose logs kong` for `forward-auth:` errors |
+| Kong hangs / runs out of sockets | `/auth/v1/ping` removed from `public_paths`, so ping recurses (§10.5) |
+| Login returns 401 before you even have a token | `/auth/v1/login` removed from `public_paths` |
+| Revoked token still works | `cache_ttl` is non-zero; it stays valid until the entry expires (§10.5) |
 | Init script edits have no effect | It only runs on an empty volume — `down -v` (§8.1) |
 
 ---
@@ -600,7 +713,9 @@ Everything above is implemented in these files.
 | `userService/.dockerignore` | §4 |
 | `docker-compose.yml` | All 5 services, network, volumes, healthchecks, `depends_on` conditions — §5, §7, §8 |
 | `.env.example` | Every overridable secret/setting — §6.1 |
-| `infra/kong/kong.yml` | Declarative Kong config: 2 services, 2 routes, plugins — §10 |
+| `infra/kong/kong.yml` | Declarative Kong config: 4 services, 4 routes, global plugins — §10 |
+| `infra/kong/plugins/forward-auth/handler.lua` | The forward-auth logic: ping, spoof guard, 401-vs-503 — §10.5 |
+| `infra/kong/plugins/forward-auth/schema.lua` | Its config fields, validated by Kong at boot — §10.5 |
 | `infra/mysql/init-databases.sql` | Creates the `authservice` schema and grants `appuser` on it — §8.1 |
 
 ### 12.2 Modified files
@@ -622,22 +737,34 @@ Plus the MongoDB → MySQL migration in §12.5.
    for §7.1–7.2.
 3. `infra/kong/kong.yml` — §10, and note `strip_path: false` against the
    controller mappings in `AuthController.java:31` and `UserController.java:19,28`.
+4. `infra/kong/plugins/forward-auth/handler.lua` — §10.5. The spoof guard and
+   the 401-vs-503 split are the two things worth reading closely.
 
 ### 12.4 Ports after this change
 
 | Service | In-network address | Published to host |
 |---|---|---|
-| Kong proxy | `kong:8000` | **`localhost:8000`** ← use this |
+| Kong proxy | `kong:8000` | **`localhost:8000`** ← everything enters here |
 | Kong admin | `kong:8001` | `localhost:8001` |
-| authService | `authservice:8080` | `localhost:8080` (direct, for debugging) |
-| userService | `userservice:9810` | `localhost:9810` (direct, for debugging) |
+| authService | `authservice:8080` | — not published |
+| userService | `userservice:9810` | — not published |
+| dsService | `dsservice:8010` | — not published |
+| expenseService | `expenseservice:9820` | — not published |
 | Kafka | `kafka:9092` | `localhost:29092` |
 | MySQL | `mysql:3306` | `localhost:3306` |
 
-The two app services stay published only so you can compare direct-vs-gateway
-behaviour while learning. In a real deployment you would remove their `ports:`
-entirely, leaving Kong as the only reachable entry point — which is the whole
-point of §9.
+The app services deliberately have no `ports:`. That is a security requirement,
+not tidiness — see §10.5: a directly reachable service can be handed a forged
+`X-User-Id`. To poke at one, go in through the network rather than reopening it:
+
+```bash
+docker compose exec kong curl -s http://expenseservice:9820/actuator/health
+docker compose logs -f expenseservice
+```
+
+`mysql` and `kafka` stay published because they hold no identity logic and a DB
+client or console consumer is worth a lot while learning. Drop those too for
+anything resembling production.
 
 ### 12.5 The MongoDB → MySQL migration
 
@@ -728,6 +855,23 @@ document, which is the same design problem wearing different annotations.
 - **DB-less mode**: config from one YAML, no Postgres, Admin API read-only.
 - **`strip_path` defaults to `true`** and will silently 404 your controllers.
   Ours are mapped at the full path, so it must be `false`.
+- **Forward auth**: Kong calls `/auth/v1/ping`, exchanges the token for a userId,
+  and injects `X-User-Id`. Downstream services validate nothing.
+- That is only sound because the plugin **clears** a client-supplied
+  `X-User-Id` *and* the services are **not published to the host**. Both halves
+  are required; either one alone is not security.
+- A **custom plugin** (`handler.lua` + `schema.lua`) beats inline `pre-function`
+  Lua: one copy, config validated at boot, no sandbox.
+- Custom plugin loading needs `KONG_LUA_PACKAGE_PATH` pointing one level ABOVE
+  `kong/` (keep the trailing `;;`) and `KONG_PLUGINS: bundled,<name>` (keep
+  `bundled`).
+- Applied globally with a `public_paths` exemption list — login/signup/
+  refreshToken/**ping** must be on it. Global-with-exemptions means a new service
+  is protected the moment it is routed.
+- Priority **below** rate-limiting, so anonymous floods are throttled before they
+  become a flood of pings at the auth service.
+- Auth service unreachable is **503**, not 401 — a 401 stampedes every client
+  into re-login during an outage.
 
 ---
 
