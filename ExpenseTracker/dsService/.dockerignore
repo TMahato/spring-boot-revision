@@ -1,0 +1,34 @@
+# Keep the build context small and the cache stable. See notes/chapter-7 §4.
+
+# Python build/run artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# Virtualenvs
+dsenv/
+venv/
+.venv/
+
+# Secrets and local overrides — must never end up in an image layer.
+.env
+
+# IDE / editor
+.idea/
+*.iml
+.vscode/
+
+# VCS
+.git/
+.gitignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs
+*.md

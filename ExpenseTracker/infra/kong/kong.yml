@@ -61,6 +61,32 @@ services:
           - DELETE
           - OPTIONS
 
+  # ---------------------------------------------------------------------------
+  # dsService (Python/Flask). Note the different path prefix shape: /v1/ds
+  # rather than /ds/v1, because that is what the Flask route declares.
+  # ---------------------------------------------------------------------------
+  - name: ds-service
+    url: http://dsservice:8010
+    connect_timeout: 5000
+    # Long read timeout on purpose: this endpoint waits on an LLM call, which
+    # can take several seconds. The default 60s is fine, but it is the one route
+    # here where the timeout is load-bearing rather than incidental.
+    read_timeout: 120000
+    write_timeout: 60000
+    # retries: 0 — a retry would re-run the LLM extraction AND republish to
+    # Kafka, so a timeout that actually succeeded server-side would produce a
+    # duplicate expense. Let the client decide whether to retry.
+    retries: 0
+    routes:
+      - name: ds-routes
+        paths:
+          - /v1/ds
+        strip_path: false
+        methods:
+          - GET
+          - POST
+          - OPTIONS
+
 # -----------------------------------------------------------------------------
 # Global plugins — the "cross-cutting concerns in one place" argument for having
 # a gateway at all (§9). Configured once here instead of in both services.

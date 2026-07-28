@@ -181,6 +181,39 @@ services:
     networks:
       - expense-net
 
+  # ---------------------------------------------------------------------------
+  # dsService — SMS in, expense event out. Python/Flask.
+  # Produces to expense-topic; expenseService will consume it (not built yet).
+  # ---------------------------------------------------------------------------
+  dsservice:
+    build:
+      context: ./dsService
+      dockerfile: Dockerfile
+    image: expense-tracker/dsservice:latest
+    container_name: et-dsservice
+    restart: unless-stopped
+    environment:
+      KAFKA_HOST: kafka
+      KAFKA_PORT: 9092
+      KAFKA_TOPIC: ${EXPENSE_TOPIC:-expense-topic}
+      # No default: the service refuses to start without it, which is correct —
+      # a silent fallback would fail later with an opaque 401 from Mistral.
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY}
+      MISTRAL_MODEL: ${MISTRAL_MODEL:-mistral-large-latest}
+    ports:
+      - "8010:8010"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - expense-net
+
   # ===========================================================================
   # API GATEWAY
   # ===========================================================================
@@ -217,6 +250,8 @@ services:
       authservice:
         condition: service_healthy
       userservice:
+        condition: service_healthy
+      dsservice:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "kong", "health"]

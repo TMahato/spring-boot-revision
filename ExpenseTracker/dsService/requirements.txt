@@ -1,0 +1,21 @@
+# Direct dependencies only — transitive ones are resolved by pip.
+#
+# The reference service's requirements.txt was a `pip freeze` dump: 100+ lines
+# including jupyter, ipython, numpy and SQLAlchemy, none of which this service
+# imports. Versions below are the reference's proven combination; they are known
+# to work together.
+
+# Web
+Flask==3.0.3
+gunicorn==22.0.0
+
+# Kafka producer
+kafka-python==2.0.2
+
+# LLM extraction
+langchain-core==0.1.45
+langchain-mistralai==0.1.2
+pydantic==2.7.1
+
+# Config
+python-dotenv==1.0.1
