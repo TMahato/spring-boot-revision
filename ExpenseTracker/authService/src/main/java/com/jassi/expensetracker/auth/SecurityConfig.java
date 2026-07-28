@@ -45,6 +45,12 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable).cors(CorsConfigurer::disable)
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/auth/v1/login", "/auth/v1/refreshToken", "/auth/v1/signup").permitAll()
+                        // The docker-compose healthcheck polls /actuator/health. Without
+                        // this, it gets a 401, the container never reports healthy, and
+                        // Kong's `depends_on: service_healthy` blocks forever.
+                        // Only health/info are exposed at all (application.properties).
+                        // See notes/chapter-7 §7.3.
+                        .requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
                         .anyRequest().authenticated()
                 )
                 .sessionManagement(sess -> sess.sessionCreationPolicy(SessionCreationPolicy.STATELESS))

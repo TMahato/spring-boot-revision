@@ -17,3 +17,4 @@ Thumbs.db
 # Secrets / local overrides
 application-local.properties
 .env
+.env.example

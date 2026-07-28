@@ -15,8 +15,9 @@ import lombok.Setter;
  * The persisted user profile in this service's own database.
  *
  * Note this is NOT the auth service's UserInfo — that one owns credentials and
- * roles in Mongo. This one owns profile data. Each service keeps its own store;
- * the Kafka event is what keeps them in sync.
+ * roles in the `authservice` schema. This one owns profile data in
+ * `userservice`. Each service keeps its own store; the Kafka event is what
+ * keeps them in sync.
  */
 @Entity
 @Table(name = "users")

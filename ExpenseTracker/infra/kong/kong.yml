@@ -1,0 +1,99 @@
+# =============================================================================
+# Kong declarative (DB-less) configuration. See notes/chapter-7 §10.
+#
+# Loaded at boot via KONG_DECLARATIVE_CONFIG. Because KONG_DATABASE=off there is
+# no Postgres and no migration step — this file IS the gateway's configuration,
+# version controlled like any other source file. The Admin API on :8001 is
+# read-only in this mode; to change routing, edit here and restart Kong.
+# =============================================================================
+_format_version: "3.0"
+_transform: true
+
+services:
+  # ---------------------------------------------------------------------------
+  # authService. The URL uses the compose SERVICE NAME, not localhost and not an
+  # IP: container IPs change on every recreate, and localhost inside the Kong
+  # container is Kong itself (§5).
+  # ---------------------------------------------------------------------------
+  - name: auth-service
+    url: http://authservice:8080
+    # Fail fast rather than hanging a client for a minute.
+    connect_timeout: 5000
+    read_timeout: 60000
+    write_timeout: 60000
+    retries: 3
+    routes:
+      - name: auth-routes
+        paths:
+          - /auth/v1
+        # CRITICAL (§10.3). Kong's default is strip_path: true, which would
+        # forward /auth/v1/signup to the service as /signup. AuthController maps
+        # @PostMapping("auth/v1/signup") — the FULL path — so stripping produces
+        # a 404 at the service while Kong reports a successful proxy.
+        strip_path: false
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+
+  # ---------------------------------------------------------------------------
+  # userService.
+  # ---------------------------------------------------------------------------
+  - name: user-service
+    url: http://userservice:9810
+    connect_timeout: 5000
+    read_timeout: 60000
+    write_timeout: 60000
+    retries: 3
+    routes:
+      - name: user-routes
+        paths:
+          - /user/v1
+        # Same reasoning: UserController maps /user/v1/getUser and
+        # /user/v1/createUpdate at the full path.
+        strip_path: false
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+
+# -----------------------------------------------------------------------------
+# Global plugins — the "cross-cutting concerns in one place" argument for having
+# a gateway at all (§9). Configured once here instead of in both services.
+# -----------------------------------------------------------------------------
+plugins:
+  # Stamps X-Request-ID on every request (generating one if the client didn't
+  # send it) and echoes it back on the response. This is what lets you follow a
+  # single request across Kong -> authService -> Kafka -> userService.
+  - name: correlation-id
+    config:
+      header_name: X-Request-ID
+      generator: uuid#counter
+      echo_downstream: true
+
+  # policy MUST be "local" in DB-less mode (§10.4): "cluster" needs a database
+  # and "redis" needs a Redis container. local keeps counters in Kong's own
+  # memory, which is correct for a single gateway node.
+  - name: rate-limiting
+    config:
+      minute: 100
+      policy: local
+      hide_client_headers: false
+
+  # Rejects oversized bodies at the edge so they never reach a service.
+  - name: request-size-limiting
+    config:
+      allowed_payload_size: 10
+      size_unit: megabytes
+
+# -----------------------------------------------------------------------------
+# NOT configured, deliberately (§10.5): the `jwt` plugin, which would validate
+# the auth service's HS256 tokens at the gateway and reject unauthenticated
+# traffic before it reaches any service. It needs the signing secret registered
+# against a Kong Consumer, and app.jwt.secret is still commented out in
+# authService's application.properties. That is the natural next step.
+# -----------------------------------------------------------------------------

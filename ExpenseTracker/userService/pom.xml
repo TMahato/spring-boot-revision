@@ -53,6 +53,14 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!-- Actuator: /actuator/health, used by the docker-compose healthcheck.
+             Aggregates real dependency health (DataSource validation query),
+             unlike the hand-rolled /health in UserController. Chapter 7 §7.3. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
         <!-- Lombok: boilerplate (@Getter/@Setter/@Builder ...) -->
         <dependency>
             <groupId>org.projectlombok</groupId>

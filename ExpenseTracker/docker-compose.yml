@@ -1,0 +1,244 @@
+# =============================================================================
+# ExpenseTracker — full local stack. See notes/chapter-7.
+#
+#   docker compose up --build
+#
+# All API traffic goes through Kong on http://localhost:8000
+# =============================================================================
+
+name: expense-tracker
+
+services:
+
+  # ===========================================================================
+  # INFRASTRUCTURE
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # MySQL — hosts BOTH services' schemas:
+  #   authservice  (users, user_roles, tokens)   <- created by the init script
+  #   userservice  (users profiles)              <- created by MYSQL_DATABASE
+  # Neither service touches the other's schema, so this is still
+  # database-per-service. See notes/chapter-7 §8.1.
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.4
+    container_name: et-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
+      MYSQL_DATABASE: ${MYSQL_USER_DB:-userservice}
+      MYSQL_USER: ${MYSQL_USER:-appuser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-AppPass123}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # Runs on FIRST init only (empty volume). Creates the authservice schema
+      # and grants appuser on it. See notes/chapter-7 §8.1.
+      - ./infra/mysql/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
+    healthcheck:
+      # -h localhost (not 127.0.0.1) so this also passes before networking is
+      # fully up. start_period covers MySQL's slow first-run initialization.
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost",
+             "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpass}"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+    networks:
+      - expense-net
+
+  # ---------------------------------------------------------------------------
+  # Kafka in KRaft mode — no ZooKeeper. See notes/chapter-7 §8.3.
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.8.1
+    container_name: et-kafka
+    restart: unless-stopped
+    ports:
+      # Only the HOST listener is published. 9092 is internal-only, reached by
+      # the app containers over the docker network.
+      - "29092:29092"
+    environment:
+      # --- KRaft: this single node is both broker and controller ---
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+
+      # --- Listeners: THE part that always breaks (notes/chapter-7 §5.1) ---
+      # A client's first call is a metadata request; the broker answers with
+      # these advertised addresses and the client reconnects to THOSE. So we
+      # need two: one resolvable inside the docker network, one from the host.
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # --- Single-broker cluster: these default to 3 and CANNOT be satisfied.
+      # Leave them at the default and consumer offset commits fail with
+      # NOT_ENOUGH_REPLICAS.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # Don't wait 3s for other consumers that will never join.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Dev convenience: user-info-topic springs into existence on first publish.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 40s
+    networks:
+      - expense-net
+
+  # ===========================================================================
+  # APPLICATION SERVICES
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # authService — signup/login, JWT issuing, Kafka producer.
+  # ---------------------------------------------------------------------------
+  authservice:
+    build:
+      context: ./authService
+      dockerfile: Dockerfile
+    image: expense-tracker/authservice:latest
+    container_name: et-authservice
+    restart: unless-stopped
+    environment:
+      # Service NAMES, never localhost or an IP (notes/chapter-7 §5).
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DB: ${MYSQL_AUTH_DB:-authservice}
+      MYSQL_USER: ${MYSQL_USER:-appuser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-AppPass123}
+      JPA_DDL_AUTO: ${JPA_DDL_AUTO:-update}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-long-random-256-bit-secret-value}
+    ports:
+      # Published only so you can compare direct vs through-the-gateway while
+      # learning. In a real deployment you delete this block and Kong becomes
+      # the only way in.
+      - "8080:8080"
+    depends_on:
+      # The long form. `depends_on: [mysql]` alone waits for the CONTAINER to
+      # start, not for MySQL to be READY — see notes/chapter-7 §7.1.
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - expense-net
+
+  # ---------------------------------------------------------------------------
+  # userService — profile store, Kafka consumer.
+  # ---------------------------------------------------------------------------
+  userservice:
+    build:
+      context: ./userService
+      dockerfile: Dockerfile
+    image: expense-tracker/userservice:latest
+    container_name: et-userservice
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DB: ${MYSQL_USER_DB:-userservice}
+      MYSQL_USER: ${MYSQL_USER:-appuser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-AppPass123}
+      KAFKA_HOST: kafka
+      KAFKA_PORT: 9092
+      # `update`, not `create` — `create` drops the schema on every restart,
+      # which makes the mysql-data volume pointless (notes/chapter-7 §7.4).
+      JPA_DDL_AUTO: ${JPA_DDL_AUTO:-update}
+    ports:
+      - "9810:9810"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9810/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - expense-net
+
+  # ===========================================================================
+  # API GATEWAY
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # Kong in DB-less mode. See notes/chapter-7 §10.
+  # ---------------------------------------------------------------------------
+  kong:
+    image: kong:3.8
+    container_name: et-kong
+    restart: unless-stopped
+    environment:
+      # off = declarative/DB-less. No Postgres, no migrations; the whole config
+      # is the mounted YAML below.
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.yml
+
+      # 0.0.0.0 so the ports are reachable from outside the container.
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      # NOTE: binding the Admin API to 0.0.0.0 is fine for local development
+      # ONLY. It is an unauthenticated control plane — never expose it publicly.
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+    ports:
+      - "8000:8000"   # proxy — ALL API traffic goes here
+      - "8001:8001"   # admin API (read-only in DB-less mode)
+    volumes:
+      - ./infra/kong:/kong/declarative:ro
+    depends_on:
+      authservice:
+        condition: service_healthy
+      userservice:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - expense-net
+
+# =============================================================================
+# A single user-defined bridge network. Compose runs a DNS server on it, which
+# is what makes `mysql`, `kafka`, `authservice` etc. resolve by service name.
+# =============================================================================
+networks:
+  expense-net:
+    driver: bridge
+
+# =============================================================================
+# Named volumes: storage that survives `docker compose down`.
+# `docker compose down -v` deletes them — that is the factory reset.
+# =============================================================================
+volumes:
+  mysql-data:
+  kafka-data:

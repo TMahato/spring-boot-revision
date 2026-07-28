@@ -1,0 +1,29 @@
+# Keep the build context small and the cache stable. See notes/chapter-7 §4.
+
+# Build output — the image builds its own; shipping a stale local jar is worse
+# than useless.
+target/
+*.class
+
+# IDE / editor
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# VCS
+.git/
+.gitignore
+
+# Secrets and local overrides — must never end up in an image layer.
+.env
+application-local.properties
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs
+*.md
