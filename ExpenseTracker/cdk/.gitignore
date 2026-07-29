@@ -1,0 +1,14 @@
+# The repo-root .gitignore excludes bin/ as a compiler output directory.
+# Here bin/ holds the CDK app entrypoint and must be tracked.
+!bin/
+
+*.js
+*.d.ts
+node_modules
+
+# CDK asset staging directory
+.cdk.staging
+cdk.out
+
+# Deploy outputs
+cdk-outputs.json

@@ -1,21 +1,20 @@
-name: Deploy Infrastructure
+name: Deploy Infrastructure (CDK)
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'ExpenseTracker/cloudformation-template--initial-infra.yaml'
+      - 'ExpenseTracker/cdk/**'
       - '.github/workflows/deploy-infrastructure.yml'
   workflow_dispatch:        # lets you run it manually from the Actions tab
 
 env:
   AWS_REGION: ap-south-1
-  PROJECT_DIR: ExpenseTracker
-  STACK_NAME: expense-tracker-infrastructure-stack
-  TEMPLATE_FILE: cloudformation-template--initial-infra.yaml
+  CDK_DIR: ExpenseTracker/cdk
+  STACK_NAME: ExpenseTrackerNetworkStack
   BUCKET_NAME: expensetrackerinfra
-  INFRA_FILE_NAME: infrastructure-outputs.json
+  INFRA_FILE_NAME: cdk-outputs.json
 
 # Never let two infra deploys run at once — CloudFormation rejects the
 # second one mid-update anyway.
@@ -27,15 +26,28 @@ jobs:
   deploy-infrastructure:
     runs-on: ubuntu-latest
 
-    # Everything below runs from inside the ExpenseTracker project folder,
-    # so all paths are relative to the project, not the repo root.
+    # Every run: step executes inside the CDK project, so npm and cdk find
+    # package.json and cdk.json without any --app / --cwd flags.
     defaults:
       run:
-        working-directory: ExpenseTracker
+        working-directory: ExpenseTracker/cdk
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ExpenseTracker/cdk/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -44,27 +56,29 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Validate template
+      # CDK needs a bootstrap stack (CDKToolkit) in every account/region it
+      # deploys into: an assets bucket plus the roles the CLI assumes.
+      # Idempotent — a no-op once it exists.
+      - name: Bootstrap CDK environment
         run: |
-          aws cloudformation validate-template \
-            --template-body file://${{ env.TEMPLATE_FILE }}
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "Bootstrapping aws://$ACCOUNT_ID/$AWS_REGION"
+          npx cdk bootstrap "aws://$ACCOUNT_ID/$AWS_REGION"
 
-      - name: Deploy Infrastructure Stack
+      # Prints the resource-level diff into the build log, so the deploy that
+      # follows is auditable after the fact.
+      - name: Diff against deployed stack
+        run: npx cdk diff || true
+
+      - name: Deploy
         run: |
-          aws cloudformation deploy \
-            --template-file ${{ env.TEMPLATE_FILE }} \
-            --stack-name ${{ env.STACK_NAME }} \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
+          npx cdk deploy --all \
+            --require-approval never \
+            --outputs-file "$INFRA_FILE_NAME"
+          cat "$INFRA_FILE_NAME"
 
-      - name: Output Infrastructure Stack Info
-        run: |
-          aws cloudformation describe-stacks \
-            --stack-name ${{ env.STACK_NAME }} \
-            --query "Stacks[0].Outputs" \
-            > ${{ env.INFRA_FILE_NAME }}
-          cat ${{ env.INFRA_FILE_NAME }}
-
+      # SSM Parameter Store (/expense-tracker/*) is the real handoff to later
+      # stacks. This copy is for humans and for anything outside CDK.
       - name: Upload infrastructure outputs to S3
         run: |
           if ! aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
@@ -80,4 +94,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: infrastructure-outputs
-          path: ${{ env.PROJECT_DIR }}/${{ env.INFRA_FILE_NAME }}
+          path: ${{ env.CDK_DIR }}/${{ env.INFRA_FILE_NAME }}
