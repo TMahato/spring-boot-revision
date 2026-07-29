@@ -1,0 +1,83 @@
+name: Deploy Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'ExpenseTracker/cloudformation-template--initial-infra.yaml'
+      - '.github/workflows/deploy-infrastructure.yml'
+  workflow_dispatch:        # lets you run it manually from the Actions tab
+
+env:
+  AWS_REGION: ap-south-1
+  PROJECT_DIR: ExpenseTracker
+  STACK_NAME: expense-tracker-infrastructure-stack
+  TEMPLATE_FILE: cloudformation-template--initial-infra.yaml
+  BUCKET_NAME: expensetrackerinfra
+  INFRA_FILE_NAME: infrastructure-outputs.json
+
+# Never let two infra deploys run at once — CloudFormation rejects the
+# second one mid-update anyway.
+concurrency:
+  group: expense-tracker-infrastructure
+  cancel-in-progress: false
+
+jobs:
+  deploy-infrastructure:
+    runs-on: ubuntu-latest
+
+    # Everything below runs from inside the ExpenseTracker project folder,
+    # so all paths are relative to the project, not the repo root.
+    defaults:
+      run:
+        working-directory: ExpenseTracker
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate template
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://${{ env.TEMPLATE_FILE }}
+
+      - name: Deploy Infrastructure Stack
+        run: |
+          aws cloudformation deploy \
+            --template-file ${{ env.TEMPLATE_FILE }} \
+            --stack-name ${{ env.STACK_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Output Infrastructure Stack Info
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name ${{ env.STACK_NAME }} \
+            --query "Stacks[0].Outputs" \
+            > ${{ env.INFRA_FILE_NAME }}
+          cat ${{ env.INFRA_FILE_NAME }}
+
+      - name: Upload infrastructure outputs to S3
+        run: |
+          if ! aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+            echo "Creating bucket $BUCKET_NAME"
+            aws s3 mb "s3://$BUCKET_NAME" --region "$AWS_REGION"
+          else
+            echo "Bucket $BUCKET_NAME already exists"
+          fi
+          echo "Uploading to bucket: $BUCKET_NAME"
+          aws s3 cp "$INFRA_FILE_NAME" "s3://$BUCKET_NAME/$INFRA_FILE_NAME"
+
+      - name: Keep outputs as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: infrastructure-outputs
+          path: ${{ env.PROJECT_DIR }}/${{ env.INFRA_FILE_NAME }}
